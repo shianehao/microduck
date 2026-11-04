@@ -120,6 +120,50 @@ WebRTC 是相機的預設路徑，所以硬體編碼不是可有可無。
 6. `scripts/board-test.sh` 對新板的 userland 跑一次。
 7. 更新 `robotd-design.md` 開頭的範圍聲明（目前寫「only the Radxa」）— 文件先改，程式才跟著改。
 
+### 2.5 作業系統
+
+**挑核心比挑發行版重要。** `mediad` 的 MPP 硬體編碼（`/dev/mpp_service`）、rkisp／rkaiq 與 RKNN 執行環境都要
+Rockchip 原廠的 **BSP 核心（目前 6.1）**。現在 `zero3` 跑 Armbian 26.2.x＋BSP 6.1.115，`beta` 跑
+`microduck_yocto`（[`updater-design.md`](../design/updater-design.md) §5.6）。
+
+**主線核心（2026）**：RK3588／RK3576 的 H.264／H.265 硬體**解碼**（VDPU381／VDPU383）已由 Collabora 合併
+（報導寫 7.0 或 7.1，不一致）；Microduck 需要的硬體**編碼**、以及 ISP，找不到已合併的資料。所以現在的影像管線
+搬不到主線上；等兩者進了主線，`mediad` 還得從 MPP 改成 V4L2 編碼介面，是另一個大工程。
+
+**候選與活躍度**（2026-11-04 從各 repo commit 頁第一頁看的快照，不是完整歷史）：
+
+| 作業系統／元件 | 核心 | 最近 commit | 頻率 | 活躍度 |
+|---|---|---|---|---|
+| **Armbian**（`armbian/build`） | `vendor`（BSP）＋`current`／`edge`（主線，已跟到 7.3） | 11/4 | 三天 35 個，一天十幾個 | 🟢🟢🟢 |
+| Rockchip 原廠核心（`rockchip-linux/kernel` `develop-6.1`） | BSP 6.1 | 7/29 | 7 月下旬一波約每週 25 個，之後無；未見 6.6 vendor 分支 | 🟢🟢 |
+| Rockchip MPP（`rockchip-linux/mpp`） | — | 11/3 | 每週約 4 個 | 🟢🟢 |
+| **Radxa OS**（`RadxaOS-SDK/rsdk`），Debian 12＋RK 6.1 | BSP 6.1 | 11/2 | 平均兩天一個，10 月中後每週約 5 個 | 🟢🟢 |
+| gstreamer-rockchip（`JeffyCN/mirrors`） | — | 10/21 | 10 月一波 15 個，之前每隔幾週一個 | 🟡🟢 |
+| RKNN Toolkit2（`airockchip/rknn-toolkit2`） | — | v2.5.0（10/20） | 每幾個月一版 | 🟢 |
+| Orange Pi 官方（`orangepi-xunlong/orangepi-build`） | BSP | 9/28 | 2026 年約每月一次，5–9 月斷了近四個月 | 🟡 |
+| BredOS（Arch Linux ARM，RK3588） | — | 核心 9/4、映像 2/24 | 上半年後很少更新 | 🟡🔴 |
+| ubuntu-rockchip（Joshua Riek） | BSP 6.1 | — | **2026-04-29 封存**；`defcom5-rockchip` 有小型 fork | 🔴 |
+| Yocto `meta-rockchip` | — | 未查到（`git.yoctoproject.org` 不在當時 session 的網路允許範圍） | — | ❓ |
+| Rockchip Linux SDK（Buildroot／Debian／Yocto）、Khadas／Firefly／Advantech 映像 | BSP 6.1 | — | 透過廠商與代理商取得 | — |
+
+觀察：
+
+- **Armbian 最活躍，且仍在維護 rk35xx vendor 核心**：11/2–11/4 有 PCA953X GPIO expander、TLV320AIC31xx codec
+  （和 `zero3` HAT 的 TLV320AIC3104 同系列）、RK3576 NPU 修補等 commit。
+- **原廠核心還停在 6.1**，和 Microduck 現在用的一致，短期內沒有升級壓力。
+- **影像元件還有人維護**：MPP 每週更新，gstreamer-rockchip 10 月有一波。
+- 避開已封存或很少更新的：ubuntu-rockchip、BredOS；Orange Pi 的板子改用 Armbian 映像。
+
+**建議**：
+
+| 階段 | 作業系統 | 原因 |
+|---|---|---|
+| 換板的桌上驗證 | **Armbian vendor 分支** | 最活躍、和 `zero3` 最接近，`setup-board.sh` 等最容易沿用 |
+| Radxa 的板子 | Armbian 為主，Radxa OS 備案 | Radxa OS 是原廠且穩定維護 |
+| 正式產品 | **`microduck_yocto`**，換新 SoC 的 BSP layer | 維持專案方向；`meta-rockchip` 活躍度待確認 |
+
+不論哪個作業系統，安裝時對板子做的事都要放進 `hooks/`（`updater-design.md` §9.1）。
+
 ---
 
 ## 3. 換 Feetech HD-1910-C001 伺服
@@ -319,6 +363,7 @@ push／brake、下坡等任務）。它只是一組策略加調校預設（`depl
 - `imu_to_dxl` 韌體是否公開、能否改講 Feetech 協定。
 - 目標板的 IMX219 驅動／overlay、UART 1 Mbps 實測、I²S codec 支援。
 - XL330 的 BAM 辨識資料能否向上游取得，作為新伺服辨識的對照。
-- `microduck_yocto` 是否有計畫支援 RK3576／RK3588S 的 BSP。
+- `microduck_yocto` 是否有計畫支援 RK3576／RK3588S 的 BSP；Yocto `meta-rockchip` 的活躍度。
+- 主線核心何時有 RK3588／RK3576 的硬體 H.264 編碼與 ISP；Armbian 2026 年 RK3588 vendor 分支的支援範圍。
 - 自走輪：XL330 速度模式在負載下的實際轉速與扭力；輪腳式從倒地站起的動作；輪子能否鎖住以保留走路技能。
 - 手臂：目標伸距與負載下脖子根部的扭力需求；夾爪機構；抓取用 IK 還是 RL 策略。
