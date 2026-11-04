@@ -78,6 +78,7 @@ thinking is not lost and does not get mistaken for a decision.
 | | |
 |---|---|
 | [`autonomous_behavior.md`](ideas/autonomous_behavior.md) | The behavior stack: what the runtime's brain has to give up, and the ideas the chorale and theremin work left behind. |
+| [`porting.md`](ideas/porting.md) | Porting to a stronger Rockchip board (RK3576 / RK3588S) and to Feetech HD-1910 servos: what each touches, what blocks it, and what to verify first. |
 
 ## Elsewhere
 
