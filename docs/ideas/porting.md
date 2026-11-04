@@ -23,6 +23,44 @@ XL330 伺服換成 Feetech HD-1910-C001，各要動到哪些地方、卡在哪�
 | 電源 | 2S NP-F550（6.6–8.2 V），伺服直接吃電池 | `robotd-design.md`（battery 段） |
 | 策略 | `microduck_rl`：mjlab／MuJoCo Warp＋PPO，伺服以 BAM M6 模型模擬 XL330 | [microduck_rl](https://github.com/pollen-robotics/microduck_rl) |
 
+### 1.1 Microduck 用過、正在用、規劃中的 Rockchip 板
+
+板子是**宣告的，不是偵測的**：`robotd.toml` 的 `[board] version` 決定一切，`Board::detect` 只給
+`robotctl health` 比對用（`robotd-params/src/board.rs`）。兩塊板都是 RK3566，所以**同一個 aarch64 release
+兩塊都跑**，差異由 daemon 依宣告的板子處理，updater 只看 `hw_rev`
+（[`updater-design.md`](../design/updater-design.md) §5.6）。
+
+| | `zero3`（`hw_rev = 1`，預設） | `beta`（`hw_rev = 2`） |
+|---|---|---|
+| 狀態 | 現役。§5.6 稱它為「暫定 — 手邊最近的板子，不是最終選擇」 | 現役。自製板的**第一版（first spin）** |
+| 主板 | Radxa Zero 3W，RK3566 | Seeed 做的 RK3566 主板 |
+| device-tree `compatible` | `radxa,zero3w-aic8800ds2`（映像）／`radxa,zero3`（Armbian） | `pollen,microduck-beta`（我們的 DT）／`seeed,microduck`（Seeed 出廠映像） |
+| 作業系統 | Armbian 26.2.x、Debian 13 userland、Rockchip BSP kernel 6.1.115 | `microduck_yocto` 映像（A/B slot，RAUC），或 Seeed 出廠映像 |
+| 擴充 | prototype 的 HAT | 臉部板＋電源板 |
+| 無線 | AIC8800（Wi-Fi＋BT 共用射頻，有配對 workaround） | — |
+| 音訊 codec | TLV320AIC3104（HAT，I²C3） | 由映像的 ALSA 設定指定 |
+| 相機 | IMX219，安裝角 90° | GC2093，安裝角 0°，Seeed 的 IQ 檔 |
+| 頭部 IMU | HAT 上的 BMI088，`tofd` 讀，預設關 | 臉部板的 LSM6DSV16X，`robotd` 讀，預設開 |
+| ToF | VL53L5CX／VL53L8CX，HAT 的 I²C3 | VL53L8CX，SPI3 CS0 |
+| NFC | 桌上用 CLRC663（USB 序列） | ST25R100，SPI，兩支天線 |
+| 臉部 LED | 無 | 12 顆，接 GPIO expander |
+| 身體 IMU 安裝 | 電源板直立：`SflpDecoder::DEFAULT_MOUNT` | 電源板平躺：`SflpDecoder::BETA_MOUNT` |
+| SoC 序號來源 | device tree | `/proc/cpuinfo` |
+| NPU | Armbian 的 DT 預設關，要套 `rk3568-npu-enable` overlay | — |
+
+**規劃中的**：repo 裡沒有寫下任何 RK3566 以外的下一塊板。看得到的方向只有兩點：`beta` 是自製板的
+「first spin」，暗示之後還有後續版本；`zero3` 被明說是暫定。§2 的 RK3576／RK3588S 是本頁的評估，
+**不是**專案的規劃。
+
+**加板與退役的機制**：新板是 `Board` 加一個變體、`hw_rev` 往上遞增；退役是設定 `Board::last_release`，
+之後的 release 就以更高的 `min_hw_rev` 打包，舊板的 updater 會拒絕並說明原因（`updater-design.md` §5.6
+「Retiring a board」）。boards 只能由舊到新依序退役。
+
+**換 SoC 時這條「一個 build」還成立嗎**：成立。RK3576／RK3588S 一樣是 aarch64，同一份 Rust release
+可以照跑；變的是映像裡的 BSP、MPP、rkaiq、RKNN 執行環境與 overlay — 依 §9.1，這些要由 `hooks/` 帶上板。
+（Radxa 的 `rk3588s2-bookworm` 套件池裡的 `gstreamer-rockchip` 和 RK3566 用的是同一版，
+見 [`media-bringup.md`](../project/media-bringup.md)，SoC 差異在 MPP 內部。）
+
 ---
 
 ## 2. 換 Rockchip 主板
