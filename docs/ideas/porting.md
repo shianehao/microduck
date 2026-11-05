@@ -7,8 +7,9 @@ XL330 伺服換成 Feetech HD-1910-C001，各要動到哪些地方、卡在哪�
 真的要做時，主板的部分落在 [`robotd-design.md`](../design/robotd-design.md) 的範圍聲明與
 `robotd-params/src/board.rs`，伺服的部分落在 `robotd-design.md` §1.1／§2 — 那兩處擁有機制，本頁只指路。
 
-[§4](#4-腳換成自走輪) 評估把腳換成有動力的輪子（輪腳式），[§5](#5-頭部換成機器人手臂) 評估把頭換成機器人手臂。
-順帶評估過、結論是**不建議**的兩個選項，理由記在 [§6](#6-評估過但不建議的選項)：Raspberry Pi 5、Arduino UNO Q。
+[§4](#4-腳換成自走輪) 評估把腳換成有動力的輪子（輪腳式），[§5](#5-頭部換成機器人手臂) 評估把頭換成機器人手臂，
+[§6](#6-rockchip-以外的板子) 比較 Rockchip 以外的主板。評估過、結論是**不建議**的選項，理由記在
+[§7](#7-評估過但不建議的選項)：Raspberry Pi 5、Arduino UNO Q、NVIDIA Jetson Orin Nano。
 
 ---
 
@@ -325,7 +326,46 @@ push／brake、下坡等任務）。它只是一組策略加調校預設（`depl
 
 ---
 
-## 6. 評估過但不建議的選項
+## 6. Rockchip 以外的板子
+
+### 6.1 結論
+
+最值得注意的是 **Allwinner A733** 的板子（Radxa Cubie A7Z、Orange Pi Zero 3W）：尺寸和 Zero 3W **一樣
+（65×30 mm）**，CPU 更強，有 NPU 和 H.264 硬體編碼。但**任何非 Rockchip 的板子，影像管線、相機 ISP、NPU
+工具鏈都得重寫**，移植量一定比換另一顆 Rockchip 大（§2）。
+
+### 6.2 候選（規格與價格多為上市時資料，2026-11 搜尋所得，購買前再確認）
+
+| 板子 | SoC | 尺寸 | CPU | NPU | H.264 硬體編碼 | 價格 | 適合度 |
+|---|---|---|---|---|---|---|---|
+| **Radxa Cubie A7Z** | Allwinner A733 | **65×30 mm** | 2×A76＋6×A55 | 3 TOPS | ✅ 4K30 H.264／H.265 | 上市價 1 GB 版 $15 起，最高 16 GB | ⭐⭐⭐ 尺寸最合，軟體成熟度有風險 |
+| **Orange Pi Zero 3W** | Allwinner A733 | Pi Zero 尺寸 | 同上 | 3 TOPS | ✅ | 2026-04 發表 | ⭐⭐⭐ 同上 |
+| **Radxa Zero 2 Pro** | Amlogic A311D | Zero 尺寸 | 4×A73＋2×A53 | 5 TOPS | ✅（確切規格未查到） | 2024 上市價 $64.99（4 GB／16 GB） | ⭐⭐ 小又有 NPU，晶片較舊，2026 供貨未查到 |
+| **NXP i.MX 8M Plus** 系列 | i.MX 8M Plus | 依廠商，多為模組＋載板 | 4×A53 | 2.3 TOPS | ✅ 1080p60 H.264／H.265，另有 ISP | 約 $135–$224 | ⭐⭐ CPU 偏弱，但工業級供貨長、主線支援好，適合正式產品 |
+| **BeagleY-AI** | TI AM67A | Pi 尺寸 | 4×A53 @ 1.4 GHz | 4 TOPS | ❓ 未查到 | 上市價 $70，零售約 $127–$135 | ⭐ CPU 弱、尺寸大 |
+| **Radxa Dragon Q6A** | Qualcomm QCS6490 | 比 Pi 小一點 | 8 核 Kryo 670 | 12 TOPS | ✅（確切規格未查到） | 4 GB $59.50 起；12 GB 約 €148 | ⭐ 算力最強、三個相機接口，功耗與體積偏大 |
+
+### 6.3 換成非 Rockchip 要重做什麼
+
+| 項目 | 換另一顆 Rockchip | 換非 Rockchip |
+|---|---|---|
+| Rust daemon | 照用 | 照用（同樣 aarch64） |
+| `mediad` 編碼元件 | `mpph264enc` 照用 | **重寫**：Allwinner 用自家 VPU 函式庫，NXP／TI 走 V4L2，Qualcomm 用自家元件 |
+| 相機 ISP | rkisp／rkaiq 照用 | **重寫**：每家 ISP 與調校工具不同 |
+| NPU 偵測器 | RKNN 重新轉換 | **換工具鏈**，模型轉換與執行環境都不同 |
+| OS 映像 | 換 BSP layer | 換廠商與 BSP，`hooks/` 與 setup 腳本多半要重寫 |
+| `Board` 變體 | 要加 | 要加 |
+
+### 6.4 建議
+
+1. **尺寸不變、算力更強**：試 **Radxa Cubie A7Z**。桌上驗證先確認三件事：GStreamer 有沒有可用的 H.264
+   **硬體編碼**元件；IMX219 驅動與 ISP；BSP 多久更新一次。Allwinner 的軟體支援一向比 Rockchip 弱，這是最大風險。
+2. **長期正式產品**：考慮 **i.MX 8M Plus** — CPU 弱，但工業級供貨長、主線核心支援好、ISP 與編碼器文件齊全。
+3. **最少移植工作**：留在 Rockchip（RK3576／RK3588S，§2），影像與 NPU 堆疊都能沿用。
+
+---
+
+## 7. 評估過但不建議的選項
 
 - **Raspberry Pi 5**：沒有硬體 H.264 編碼（`mediad` 要改軟體編碼，和 50 Hz 迴圈搶 CPU）、沒有 NPU、相機
   堆疊要改 libcamera、要新 OS 映像；85×56 mm、5 V／5 A、要主動散熱，塞不進 25 cm／800 g 的機身。
@@ -333,12 +373,14 @@ push／brake、下坡等任務）。它只是一組策略加調校預設（`depl
 - **Arduino UNO Q**（QRB2210，4×A53）：算力和 RK3566 同級，換了沒有收益；失去 MPP／RKNN；68.58×53.34 mm；
   Vin 下限 7 V 低於 2S 負載下的 6.6 V，實際仍要穩壓。內建 STM32 理論上能專管伺服匯流排，但 `robotd` 在一般
   Linux 上已能穩定 50 Hz，不值得為此重構。
+- **NVIDIA Jetson Orin Nano**：GPU 很強，但依現有了解 Orin Nano 沒有硬體編碼器（未重新查證）；功耗約 7–15 W，
+  體積也大。
 
 ---
 
-## 7. 相關事實
+## 8. 相關事實
 
-### 7.1 機構與授權
+### 8.1 機構與授權
 
 - 本 repo 沒有 CAD。MJCF＋STL 在 `microduck_rl`（由 Onshape 以 onshape-to-robot 匯出，Onshape 原檔未公開）；
   **STL 授權為 CC BY-NC-SA 4.0，不可商用**。依報導，機構與電路設計不開源。
@@ -348,7 +390,7 @@ push／brake、下坡等任務）。它只是一組策略加調校預設（`depl
 - 等比例放大 *k* 倍：質量 ∝ *k*³、抗重力扭力 ∝ *k*⁴、慣量 ∝ *k*⁵。放大很快就超出 XL330 能力 — 這也是
   Feetech 伺服被考慮的理由之一，但兩件事一起改，風險疊加。
 
-### 7.2 在本地訓練（RTX 3050 Laptop，4 GB，38 W）
+### 8.2 在本地訓練（RTX 3050 Laptop，4 GB，38 W）
 
 - Ampere 架構、驅動 595／CUDA 13.2，MuJoCo Warp 可以跑。
 - VRAM 主要吃在模擬資料，與環境數成正比；從 `--env.scene.num-envs 1024` 開始，用 `nvidia-smi` 看用量，
@@ -357,7 +399,7 @@ push／brake、下坡等任務）。它只是一組策略加調校預設（`depl
 
 ---
 
-## 8. 未決問題
+## 9. 未決問題
 
 - HD-1910 的原廠協定與暫存器表；是否真的與 Microduck 機構相容。
 - `imu_to_dxl` 韌體是否公開、能否改講 Feetech 協定。
@@ -367,3 +409,5 @@ push／brake、下坡等任務）。它只是一組策略加調校預設（`depl
 - 主線核心何時有 RK3588／RK3576 的硬體 H.264 編碼與 ISP；Armbian 2026 年 RK3588 vendor 分支的支援範圍。
 - 自走輪：XL330 速度模式在負載下的實際轉速與扭力；輪腳式從倒地站起的動作；輪子能否鎖住以保留走路技能。
 - 手臂：目標伸距與負載下脖子根部的扭力需求；夾爪機構；抓取用 IK 還是 RL 策略。
+- 非 Rockchip：A733 的 GStreamer 硬體編碼元件與 IMX219／ISP 支援、BSP 更新頻率；A311D 2026 供貨；AM67A 與
+  QCS6490 的編碼規格。
