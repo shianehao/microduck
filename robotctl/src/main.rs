@@ -1846,6 +1846,11 @@ struct HealthReport {
     /// GStreamer stack runs no `mediad`, and the units block is where that is reported.
     #[serde(skip_serializing_if = "Option::is_none")]
     camera: Option<proto::CameraStats>,
+    /// Seconds since `mediad` last rewrote [`HealthReport::camera`], set only when that is longer
+    /// than [`proto::CAMERA_STATS_MAX_AGE`]: the camera has stopped, and `camera.fps` is the rate
+    /// it had when it did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    camera_stopped_secs: Option<u64>,
     /// What `mediad`'s relay last published about the rendezvous service. `None` for the camera's
     /// reasons, plus `--no-remote`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1994,6 +1999,9 @@ fn run_health(
         robot_error: None,
         software: collect_version_report(socket, robot_socket, config_socket),
         camera: proto::read_camera_stats(),
+        camera_stopped_secs: proto::camera_stats_age()
+            .filter(|age| *age > proto::CAMERA_STATS_MAX_AGE)
+            .map(|age| age.as_secs()),
         remote: proto::read_remote_status(),
         account: Client::connect(socket)
             .ok()
@@ -2098,6 +2106,13 @@ fn render_health(report: &HealthReport) -> String {
                     format!("servos ok, waiting for the IMU board, {n} attempts")
                 }
                 (0, n) => format!("waiting for a robot to answer, {n} attempts"),
+                (n, _) if !health.bus.missing.is_empty() => format!(
+                    "{n} consecutive read failures, not answering: {}",
+                    health.bus.describe_missing()
+                ),
+                (n, _) if health.imu.is_some_and(|imu| imu.missing) => {
+                    format!("{n} consecutive read failures, servos ok, the IMU board is silent")
+                }
                 (n, _) => format!("{n} consecutive read failures"),
             };
             let _ = writeln!(out, "  {:<9} {bus}", "bus");
@@ -2214,7 +2229,15 @@ fn render_health(report: &HealthReport) -> String {
     // rather than about which release is installed. Omitted entirely when `mediad` has published
     // nothing — "camera unknown" on a board with no camera is noise, and a `mediad` that is not
     // running is already a line in the units block.
-    if let Some(camera) = &report.camera {
+    if let (Some(camera), Some(secs)) = (&report.camera, report.camera_stopped_secs) {
+        // A stopped camera first, in words: its file still holds the last rate it had, and
+        // printing that as current is how a dead camera read as "10.0 fps (target 30)".
+        let _ = writeln!(
+            out,
+            "camera    stopped — no frame for {secs}s (was {:.1} fps, {}x{} {})",
+            camera.fps, camera.width, camera.height, camera.format
+        );
+    } else if let Some(camera) = &report.camera {
         let rate = if camera.fps >= f64::from(camera.target_fps) * 0.9 {
             format!("{:.1} fps", camera.fps)
         } else {
@@ -2495,6 +2518,7 @@ fn describe_attempt(entry: &proto::LogEntry) -> String {
         proto::Outcome::Success => format!("{target}: applied"),
         proto::Outcome::RolledBack { reason } => format!("{target}: ROLLED BACK — {reason}"),
         proto::Outcome::Aborted { reason } => format!("{target}: refused — {reason}"),
+        proto::Outcome::Stuck { reason } => format!("{target}: STUCK — {reason}"),
     }
 }
 
@@ -3058,6 +3082,7 @@ impl Failure {
             code::BUSY => exit::BUSY,
             code::INCOMPATIBLE
             | code::PREFLIGHT_FAILED
+            | code::SESSIONS_CONNECTED
             | code::VERIFICATION_FAILED
             | code::WOULD_DOWNGRADE
             | code::NOT_INSTALLED
@@ -6687,6 +6712,7 @@ mod tests {
             robot_error: robot_error.map(str::to_owned),
             software: report(vec![service("robotd", "0.2.0")], Some("0.2.0")),
             camera: None,
+            camera_stopped_secs: None,
             remote: None,
             account: None,
             board: BoardReport {
@@ -6918,6 +6944,22 @@ mod tests {
             out.contains("camera    19.6 fps (target 30), 1280x720 UYVY, 412 dropped — 2 viewers"),
             "{out}"
         );
+    }
+
+    /// A camera whose stats have gone stale has stopped, and says so rather than repeating the
+    /// last rate it had — which is what a camera that died three seconds after boot looked like.
+    #[test]
+    fn health_renders_a_stopped_camera() {
+        let mut report = health_report(None, None);
+        report.camera = Some(camera_stats(10.0, 48, 0));
+        report.camera_stopped_secs = Some(312);
+        let out = render_health(&report);
+
+        assert!(
+            out.contains("camera    stopped — no frame for 312s (was 10.0 fps, 1280x720 UYVY)"),
+            "{out}"
+        );
+        assert!(!out.contains("target"), "{out}");
     }
 
     /// No `mediad`, no line. A robot that has never started it should not read as having a fault.
@@ -7468,6 +7510,12 @@ mod tests {
         }));
         assert!(rolled.contains("ROLLED BACK"), "{rolled}");
         assert!(rolled.contains("not healthy within 30s"), "{rolled}");
+        // Left live after a failed gate: something changed, so not "refused".
+        let stuck = describe_attempt(&entry(proto::Outcome::Stuck {
+            reason: "not healthy within 30s; auto-rollback is off".into(),
+        }));
+        assert!(stuck.contains("STUCK"), "{stuck}");
+        assert!(!stuck.contains("refused"), "{stuck}");
 
         // A first install has no `from`, and must not render as "None → 1.0.0".
         let first = proto::LogEntry {
