@@ -841,7 +841,6 @@ robot.
 | `robot.health` | **the loop is meeting its deadline** — from achieved rate and missed-deadline count — plus a description of the robot the verdict never consults: loop, bus, IMU, battery, servo and board temperature, and the board's clock ceiling |
 | `robot.safeToRestart` | false while the policy is enabled and the robot is moving |
 | `robot.modelApi` | constant |
-| `robot.remoteSessionActive` | `false` — `mediad` owns the real answer |
 
 Health is computed by the IPC side from atomics the loop publishes — a last-tick timestamp plus
 counters — never by asking the loop. That is what lets a *wedged* loop report itself unhealthy
@@ -860,6 +859,15 @@ updated at all until someone works out why. Motor temperature would do the same 
 afternoon, and a throttled clock on a robot that had got warm once — which is the strongest case
 of the three, since the release that would fix the heat is the one the gate would refuse to
 keep.
+
+**A run of failed reads could be either, so the loop asks the bus which.** A servo unplugged
+mid-run fails every sync read exactly as a release with a broken read path does, and only the
+second is something a rollback fixes. So once the run reaches `max_consecutive_errors`, and every
+few seconds while it lasts, the loop pings each servo and the IMU board. If any of them is silent,
+the verdict is degraded and names them, which is what the same robot gets on its next boot. If
+every one answers, or the ping itself fails, it stays unhealthy. Without the ping round, the
+verdict for the same hardware depended on whether it was unplugged before or after `robotd`
+started.
 
 **Why they travel together anyway.** One method, because the question arrives once: a robot
 behaving oddly gets asked "what is going on", and a verdict without the numbers behind it just
@@ -1020,6 +1028,7 @@ intents the loop already arbitrates.
 | `sound.rs` | the voice at play time — one `aplay` child, and a new sound kills the old one, because the codec's PCM is exclusive | the module header |
 | `theremin.rs` | depth from `tofd` at 15 Hz → a note, a mouth opening, and a line of state, sampled by the 50 Hz loop and never waited on | the module header |
 | `chorale.rs` | several ducks singing one piece: the lowest id conducts, the conductor owns the seating, `btd` carries the beacons and does no thinking | the module header |
+| `emotion.rs` | an emotion = keyframes and a wav, shipped in the release with `[emotions] dir` on top, played by `robot.do <name>` through the same head, pose and mouth commands a client sends | the module header |
 | `pet-detect/` | a ~20 KB CNN over a 40-band log-mel window from the onboard mic, in its own worker | the crate header |
 | `vetbook.rs` | the robot's lifetime record: a tally the tick adds to without a lock, handed to the shared book once a second with `try_lock`, saved atomically once a minute; plus a 1-byte read of each servo's latched alerts every 10 s | the module header, and `duck_ipc_proto::vetbook` for the record |
 
