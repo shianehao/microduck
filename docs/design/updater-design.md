@@ -28,7 +28,8 @@ document is the update system only.
   (§5.5).
 - Trigger + monitor updates from the mobile app.
 - **Force-upgrade off known-bad releases** via a minimum-version floor.
-- Never brick a robot: atomic apply, automatic rollback, signed artifacts.
+- Never brick a robot: atomic apply, signed artifacts. Automatic rollback exists but is off by
+  default (§8).
 - Keep it simple; no fleet backend.
 - Be **reusable across the team's other robots** with minimal adaptation.
 - Support a per-component **post-install hook** for migrations / one-off steps.
@@ -448,7 +449,7 @@ What the container cannot cover, and hardware must: a real `systemctl restart`
 against the real filesystem, and whether the health-gate timeouts suit a robot that
 takes tens of seconds to stand up.
 
-**Two boards, one build.** The Zero 3W and the beta are both RK3566, so one aarch64 release
+**Every board, one build.** The Zero 3W and the beta (with either face board) are all RK3566, so one aarch64 release
 runs on either. No variant / IMU / camera matrix, no per-device hardware profile, no artifact
 selection logic: what differs between the boards is the daemon's business, keyed on the board
 the robot declares, not the updater's.
@@ -456,7 +457,7 @@ the robot declares, not the updater's.
 What the updater keeps is deliberately minimal:
 - **`min_hw_rev`** in the manifest (§5.3): one integer, refused when it is above the robot's.
 - **The robot's revision is its declared board**: `[board] version` in `robotd.toml`
-  (`robotd_params::board::Board::hw_rev`: zero3 is 1, beta is 2), read before every check.
+  (`robotd_params::board::Board::hw_rev`: zero3 is 1, beta is 2, face-board-v1 is 3), read before every check.
   `hw_rev` in `updater.toml` applies only when no board is declared — every robot installed
   before the board was a setting carries `hw_rev = 1`, and a board provisioned against a
   release that still shipped it does too, so it cannot be allowed to outrank the board.
@@ -645,9 +646,19 @@ side effects:
   stopped/parked (motors safe). `updaterd` still does a light "safe to restart?"
   query to `robotd` and refuses if not — cheap insurance against restarting
   motor control mid-motion.
-- **No active remote session.** Restarting `robotd`/`mediad` mid-telepresence is a
-  bad surprise; refuse, or warn and require explicit confirmation. See
-  [`architecture.md`](architecture.md) §5.
+- **No active remote session.** Restarting `robotd`/`mediad` mid-call is a bad
+  surprise, so the check refuses while any WebRTC peer is connected, with
+  `SESSIONS_CONNECTED` (16) rather than `PREFLIGHT_FAILED` so a client can
+  tell it apart, and `interrupt_sessions` is the explicit confirmation. The count is `mediad`'s:
+  the `consumers` it writes to `/run/mediad/camera.json` every second, read
+  through `duck_ipc_proto::read_webrtc_peers`. A missing or stale file (over
+  5 s) passes, because the check is a courtesy and must never be what refuses
+  a recovery update. A request made over WebRTC by the only peer connected is
+  not refused for its own presence: `mediad` sets `interrupt_sessions` on it
+  before forwarding (`mediad/src/session.rs`, `Seat`). The rendezvous control
+  lane carries no media, so it is counted as its client's peer only while the
+  same remote session also holds the bridged video. A browser still
+  negotiating counts from the moment `webrtcsink` adds it, until it gives up.
 - **Disk space.** Storage is eMMC (finite, wear less of a concern than SD, but
   space still is). Verify free space for download + extract + `keep_previous`
   before starting.
@@ -699,6 +710,24 @@ daemon; it makes the situation true rather than overriding a check that says it 
 and the next update that ships the unit reinstalls it.
 
 ## 8. Health gate & rollback
+
+**Automatic rollback is off by default.** `[update_gate] auto_rollback` in `robotd.toml` turns it
+on; `robotctl configure` has the row. Every path below that reverts without being asked — the gate
+after `update apply`, `select` or `rollback`, the boot counter, and the boot check
+([`boot-recovery-net.md`](boot-recovery-net.md)) — reads it at the moment it would act.
+
+Off is the default because releases now reach robots as tested Yocto images. A separate daemon
+update is the dev-board case, where someone is holding the robot. There, a revert nobody asked
+for does more damage than a broken release left in place: it replaces the code under whoever is
+looking at the robot, as the boot-counter incident below shows. This is a soft deprecation. The
+code stays, tested and one setting away.
+
+With it off, the gate still runs and still decides. A release that fails stays live, and the
+outcome is `Stuck` with a reason that names the command that reverts it
+(`robotctl update rollback <component>`). The trial is cleared, so the boot counter does not ask
+again. The update log records it as `Stuck`, not rolled back, so `known_bad` does not blacklist a
+release nobody reverted. `updaterd` reads the key through `Config::robotd_config`, both layers,
+on every decision. Missing, unreadable or not a bool reads as off.
 
 - After apply, the new `robotd` must clear a **healthy flag** within a
   per-component timeout (motors ack, model loads, media pipeline inits).
@@ -1261,8 +1290,14 @@ The rest is the client's to follow: poll `os.status`, expect the link to drop
 at `rebooting`, and read `last_result` after the reboot.
 
 Routing: `btd` permits all four (§4.1's argument for `update.apply`, and the
-switch is the rollback); `mediad` permits only the reads, because `mediad` is in
-`allow_users` and its transport has no authorisation of its own. A board with
+switch is the rollback), and so does `mediad`. Its transport has no
+authorisation of its own, but neither does the image's page on port 8090, which
+takes the same two mutations from the same LAN; through `mediad` they at least
+pass `updaterd`'s lock and preflight. The reboot drops a WebRTC session as it
+drops a BLE link, and the client rides it out the same way. Another peer's call
+is what the session check (§7.2) protects: with anyone else connected the
+update is refused, and the client asks again with `interrupt_sessions` once its
+user has agreed to drop them. A board with
 no script answers `NOT_SUPPORTED` (15). Nothing applies an OS update unattended:
 the periodic check does not look at the channel.
 
