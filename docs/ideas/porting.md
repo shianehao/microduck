@@ -173,6 +173,50 @@ Rockchip 原廠的 **BSP 核心（目前 6.1）**。現在 `zero3` 跑 Armbian 2
 
 不論哪個作業系統，安裝時對板子做的事都要放進 `hooks/`（`updater-design.md` §9.1）。
 
+### 2.6 目前推薦：RK3576，第一塊買 Radxa ROCK 4D（2026-11）
+
+**選 RK3576，不選 RK3588S。** 兩者 NPU 都是 6 TOPS、都有 MPP 硬體編碼；RK3576 的 CPU（4×A72＋4×A53）已比
+RK3566 強很多，而且功耗、發熱、價格都低。這隻鴨子的瓶頸是功耗與散熱，不是算力 — `microduck-replica` 的 A7Z
+（§6.5）拿外部風扇吹裸板，CPU 過 60°C 就開始降頻，機身裡沒有散熱空間，RK3588S 多出來的算力多半會被降頻吃掉。
+只有要在機器人上跑重視覺模型、本地 LLM 或多路相機時才選 RK3588S。
+
+**第一塊（桌上驗證）買 Radxa ROCK 4D，4 GB、一般 RK3576（非工業級 RK3576J）**：
+
+1. 和 Zero 3W 同廠（Radxa）。Radxa 支援表列 ROCK 4D 有 Debian 12＋RK 6.1 官方映像，Radxa OS SDK 穩定更新。
+2. Armbian 在跟 RK3576（11 月初有 RK3576 NPU 修補與 rk35xx vendor 核心 commit），用它最接近 `zero3`（§2.5）。
+3. RKNN Toolkit2 v2.x 起正式支援 RK3576，偵測器模型可重新轉換。
+4. 便宜、省電（實測待機約 2.7 W），最後不用也不心疼。
+
+要裝進機身時，再換同一顆 RK3576 的小尺寸模組（Radxa 的 RK3576 運算模組、Firefly CAM-3576 約 38×38 mm）。
+
+**買到後先驗證**（從 A7Z 的經驗來）：
+
+1. **伺服匯流排**：1 Mbps UART 接 15 顆 XL330＋IMU，連續 5 分鐘以上 sync read 不超時。A7Z 卡最久的正是 UART
+   FIFO 小、偶發讀取失敗。
+2. **硬體編碼**：`gst-inspect-1.0 mpph264enc` 存在，且真能硬體編碼 720p。
+3. **相機**：IMX219 驅動、overlay，rkaiq 有沒有 RK3576 的 IQ 檔。
+4. **溫度**：在模擬機身的通風條件下跑控制迴圈＋相機串流，看會不會降頻。
+
+**前提：先確認真的需要換板。** RK3566 跑 50 Hz 迴圈與硬體編碼都沒問題（`roadmap.md`：約 15000 tick 漏 3 個）。
+換板的理由應該是要跑更重的模型，或 1 TOPS NPU 不夠用。
+
+**購買（價格多為 2025 上市資料，2026 RAM 漲價後可能更高，下單前確認）**：
+
+| 通路 | 價格 | 備註 |
+|---|---|---|
+| Arace Tech（Radxa 官方商店） | 2 GB $30、**4 GB $40**、8 GB $60、16 GB $100 | 有使用者反映網站庫存資訊不準 |
+| AliExpress（Radxa 官方店） | 2 GB $31.41、**4 GB $37.12**、8 GB $57.82、16 GB $99.80 | 通常最便宜，台灣約 1–3 週 |
+| AllNet | — | 授權經銷，歐洲為主 |
+| Amazon | 4 GB 第三方約 $59.99（2026-01），缺貨 | 偏貴 |
+| 露天（台灣秋葉原電子企業社），商品 11090705205381 | **8 GB NT$2,900**（標題含稅，另有 16 GB），庫存 5 | 價格設定於 **2025-06-02**，一年多沒更新，可能不照價出貨；照片上看不到 Wi-Fi 模組 |
+| 露天（同一賣家），商品 11091202292684 | 6 GB NT$4,200，庫存 2 | 價格 2026-10-22 更新；照片左側有金屬屏蔽模組（像 Wi-Fi／BT）；註明「不支持 eMMC」 |
+
+露天兩筆是同一賣家、同一款板子。第一筆較划算，但下單前先用露露通問：NT$2,900 是否有效、板上有沒有 Wi-Fi／BT
+（ROCK 4D 可能分有無 Wi-Fi 兩種，照片無法確認）、「不支持 eMMC」指什麼。只做桌上驗證，沒有 Wi-Fi 也可接網路線；
+要接近實機（WebRTC、手把、BLE 配網）則需要 Wi-Fi／BT。帶射頻的板子個人進口依 NCC 與關務署現行規定。
+
+一起準備：USB-C PD 電源、散熱片、microSD 卡、IMX219 排線（先查 ROCK 4D MIPI CSI 接口規格）、USB 轉 TTL 序列線。
+
 ---
 
 ## 3. 換 Feetech HD-1910-C001 伺服
@@ -214,6 +258,12 @@ Rockchip 原廠的 **BSP 核心（目前 6.1）**。現在 `zero3` 跑 Armbian 2
 4. 致動器辨識 → 更新模擬 → 在 `microduck_rl` 重訓。
 5. 寫 Feetech 版 `RobotIo`，加設定開關（例如 `[bus] servo = "hd1910"`），同步更新 `robotd-design.md`
    （目前寫「only the v2 `imu_to_dxl` board」）。
+
+### 3.4 已有的實例
+
+社群已經有 HD-1910 的控制程式：`kissqy/Microduck-kissqy` 的 `microduck-hd1910/firmware`（有
+`duck-control/src/feetech.rs`），`microduck-replica` 的 A7Z 版本就是用它（§6.5）。它讓實機邁出了步，但伺服
+匯流排的偶發讀取失敗至今未解 — 對應 §3.3 第 2 點的時序問題。細節見 §6.5。
 
 ---
 
@@ -371,6 +421,53 @@ push／brake、下坡等任務）。它只是一組策略加調校預設（`depl
 2. **長期正式產品**：考慮 **i.MX 8M Plus** — CPU 弱，但工業級供貨長、主線核心支援好、ISP 與編碼器文件齊全。
 3. **最少移植工作**：留在 Rockchip（RK3576／RK3588S，§2），影像與 NPU 堆疊都能沿用。
 
+### 6.5 實例：`microduck-replica` 的 Radxa Cubie A7Z 移植（2026-11）
+
+`shianehao/microduck-replica`（fork 自 `Liangjin5437/microduck-replica`，原始碼在其 `codex/cubie-a7z-preview`
+分支）的 `radxa-cubie-a7z/` 目錄，就是 §3＋§6 一起做的實際嘗試：**Cubie A7Z（Allwinner A733）＋飛特 HD-1910
+伺服**。以下依該目錄自己的記錄，狀態都是**預覽**。
+
+**架構**
+
+- 控制程式不在該 repo：`robotd`／`mediad` 來自 `kissqy/Microduck-kissqy` 的 `microduck-hd1910/firmware`，
+  該目錄只放補丁、安裝工具與測試。
+- 作業系統：Radxa 官方 A733 Debian 11（bullseye），核心 `5.15.147-21-a733`。
+- 子目錄：`control/`（UART、分組同步讀補丁、唯讀安裝器、匯流排監測、診斷）、`control/camera/`（IMX219
+  WebRTC 預覽）、`studio/`（網頁中控、虛擬手把）、`thermal/`（溫控修正）、`image/`（整機映像）、`provision/`
+  （開熱點配網）。
+- 已發布 `preview1` 映像（2026-11-09），但它自己註明是修復前的歷史版，**尚未做燒錄後的實機啟動、聯網、動作、
+  聲音驗收**。
+
+**做到的**
+
+- 網頁虛擬手把操作下，**實機已能邁步**（2026-11-06）；長時間穩定行走未驗收。
+- 15 顆伺服與 IMU 可在 Studio 標定。
+- **溫控修正**：板級 device tree 讓 `power_allocator` 在低溫也把 CPU 鎖在 **416 MHz**；改成 `step_wise` 後大核
+  可到 2002 MHz，過 60°C 才降頻。
+- IMX219 出 960×720、15 fps 的 WebRTC 畫面（僅原始碼，preview1 預設關閉）。
+
+**沒解決的**
+
+- **伺服匯流排偶發讀取失敗（最大問題）**：5 分鐘 15000 次讀取，有一次失敗 788 次（多在 ID 32、33），另一次
+  2050 次（ID 33、34），也有一次全數成功。根因未找到。把 15 顆的 sync read 拆成每組 3 顆（避免回應塞爆
+  64 bytes 的 UART FIFO）有改善但沒根治。A7Z 走 `uart-ng`、UART0／ttyAS0 別名與 32 MHz 時鐘，Zero 3W 的
+  UART 設定腳本不能照搬。
+- **相機是軟體編碼**：補丁新增 `x264enc`（`ultrafast`＋`zerolatency`），`mediad` 的 systemd 給 `CPUQuota=400%`
+  — 證實 §6.4 擔心的事：這條路上 GStreamer 沒有現成可用的 H.264 硬體編碼元件。
+- 實體手把、ToF、持續語音、關節追蹤未啟用；喇叭能否出聲未確認。
+- 走一陣子後**左腳踩右腳跌倒**，排查中。
+
+**和本頁預測的對照**
+
+| 本頁的預測 | 實際 |
+|---|---|
+| §3.3：要先量 15 顆一次 sync read 能否塞進 20 ms | 正是卡住的地方：UART FIFO 太小，要分組讀，仍偶發超時 |
+| §6.4：A7Z 最大風險是硬體編碼 | 確認，目前只能軟體編碼 |
+| §6.4：Allwinner BSP 支援較弱 | 溫控 device tree 有 bug，UART 要另外調 |
+| §3.2：策略要重訓 | 沿用一套 `R17` 動作模型（站立、行走、起坐、撿東西、前滾翻、踢球），來源未記載 |
+
+這也是 §2.6 推薦留在 Rockchip 的實證：換到非 Rockchip，編碼、溫控、UART 都得自己解。
+
 ---
 
 ## 7. 評估過但不建議的選項
@@ -417,5 +514,8 @@ push／brake、下坡等任務）。它只是一組策略加調校預設（`depl
 - 主線核心何時有 RK3588／RK3576 的硬體 H.264 編碼與 ISP；Armbian 2026 年 RK3588 vendor 分支的支援範圍。
 - 自走輪：XL330 速度模式在負載下的實際轉速與扭力；輪腳式從倒地站起的動作；輪子能否鎖住以保留走路技能。
 - 手臂：目標伸距與負載下脖子根部的扭力需求；夾爪機構；抓取用 IK 還是 RL 策略。
-- 非 Rockchip：A733 的 GStreamer 硬體編碼元件與 IMX219／ISP 支援、BSP 更新頻率；A311D 2026 供貨；AM67A 與
-  QCS6490 的編碼規格。
+- 非 Rockchip：A733 的 H.264 硬體編碼（`microduck-replica` 目前只能用 `x264enc` 軟體編碼，§6.5）、BSP 更新頻率；
+  A311D 2026 供貨；AM67A 與 QCS6490 的編碼規格。
+- `microduck-replica` A7Z 版伺服匯流排偶發讀取失敗的根因；`R17` 動作模型的來源。
+- ROCK 4D：1 Mbps UART 長時間 sync read 是否穩定、`mpph264enc` 在 RK3576 上是否可用、rkaiq 的 IMX219 IQ 檔、
+  機身內溫度；露天那兩筆的實際價格與有無 Wi-Fi／BT。
