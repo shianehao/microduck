@@ -468,16 +468,82 @@ push／brake、下坡等任務）。它只是一組策略加調校預設（`depl
 
 這也是 §2.6 推薦留在 Rockchip 的實證：換到非 Rockchip，編碼、溫控、UART 都得自己解。
 
+### 6.6 Raspberry Pi 4／5（以及 Zero 2W、CM4）
+
+**為什麼一直問「有沒有硬體 H.264 編碼」。** 原始畫面 1280×720 UYVY 一張約 1.8 MiB，30 fps 約 55 MB/s
+（約 440 Mbps），Wi-Fi 傳不動；H.264 壓到約 2–3 Mbps 才能給 WebRTC（手機、瀏覽器、遠端中繼）用 —
+依 [CLAUDE.md](../../CLAUDE.md)，WebRTC 是相機的預設路徑。偵測器不經編碼，它從 raw tee 拿原始畫面。
+任何板子都能用 `x264enc` 軟體編碼，差別在代價：CPU 要留給 50 Hz 控制迴圈，機身沒有散熱空間。專案踩過一次：
+在管線裡加 `videoflip` 讓 MPP 改用軟體轉換，**97 °C、降頻到 408 MHz、30 fps 只剩 8 fps**
+（`mediad/src/pipeline.rs` 開頭的說明）。所以 Rockchip 的 `mpph264enc` 是留在 Rockchip 的最大理由之一。
+
+**相機是 Pi 最強的地方。** IMX219 就是 Pi Camera v2；libcamera（官方維護）、`rpicam-apps`、Picamera2、GStreamer
+`libcamerasrc` 都成熟，ISP 調校官方做好，不用像 Rockchip 那樣處理 rkaiq 和 IQ 檔。社群也最大。
+對照：Arduino UNO Q 的相機支援還不成熟 — USB webcam 大致可用（用 VIN 供電時要強制 USB host 模式），MIPI CSI
+要另購 Media Carrier，libcamera 有 `VIDIOC_STREAMON` 失敗的回報，上游 CSI 驅動未完全合併（2026-11）。
+
+| | Pi 4（BCM2711） | Pi 5 | Pi Zero 2W | CM4 |
+|---|---|---|---|---|
+| CPU | 4×A72，比 RK3566 強 | 4×A76 | 4×A53 @ 1 GHz，比 RK3566 弱 | 同 Pi 4 |
+| 硬體 H.264 編碼 | ✅ V4L2 `v4l2h264enc`，約 1080p30（未重新查證） | ❌ 只能 libx264 | ✅ | ✅ 同 Pi 4 |
+| NPU | ❌ | ❌ | ❌ | ❌ |
+| RAM | 依型號 | 依型號 | 512 MB | 依型號 |
+| 尺寸 | 85×56 mm | 85×56 mm | **65×30 mm**（同 Zero 3W） | 約 55×40 mm，要自製載板 |
+| 評估 | Pi 家族裡最合適；桌上驗證 | 桌上算力實驗 | 前身 `microduck_runtime` 跑的就是它，50 Hz 也是從它沿用；後來因 RAM、算力、無 NPU 換到 Radxa | 想用 Pi 生態又要裝機時的路線 |
+
+**Pi 5 用 libx264 的評估。** Microduck 出廠是 **720p30**（`mediad/src/pipeline.rs:269`），constrained baseline、
+約 2–3 Mbps。Raspberry Pi 官方白皮書（2026-04，「H.264 encoding performance on Raspberry Pi 5」）說 libx264
+在 4×A76 上可即時編碼 **1080p30**；CPU 占用的確切數字未確認。720p 的像素約 1080p 的 44%，加上 `ultrafast`＋
+`zerolatency`，推估約一個核心左右（**未實測**）。算力夠，問題在**持續負載的發熱**：桌上有散熱沒問題，裝進
+機身很可能降頻，連帶拖慢控制迴圈；也更耗電。
+
+**換到 Pi，程式要改什麼**（Pi 4／5 共通，除註明外）：
+
+1. **編碼**：`mediad` 找不到 `mpph264enc` 時本來就退回 `x264enc`（`mediad/src/pipeline.rs:856`），Pi 5 這端
+   幾乎不用改；Pi 4／Zero 2W／CM4 要加 `v4l2h264enc` 路徑才能用硬體編碼。
+2. **相機來源**：rkisp 改成 `libcamerasrc`。
+3. **像素格式**：管線傳 UYVY，但 `x264enc` 不吃 UYVY（`pipeline.rs:844`）。讓 libcamera 直接出 I420 就不用轉，
+   但偵測器與快照的取樣（`uyvy` crate）要另寫 I420 版；或加 `videoconvert`，多一筆 CPU，也違反「整條管線不做
+   轉換」的設計（`pipeline.rs` 開頭）。
+4. **隔離**：限制 `x264enc` 的 thread 數，用 systemd `CPUAffinity` 讓它和 `robotd` 分開核心。
+5. **偵測器**：沒有 NPU，`duck_detect.onnx` 改在 CPU 跑，或外接 Coral／Hailo。
+6. **板子本身**：`Board` 加變體、Pi 版的 `setup-board.sh`／overlay／`hooks/`、OS 映像；更新 `robotd-design.md`
+   的範圍聲明（目前刻意不支援 Pi）。
+
+**實測方法**（Pi 5，接 IMX219，至少跑 10 分鐘，有／無散熱片各一次）：
+
+```bash
+gst-launch-1.0 libcamerasrc ! video/x-raw,format=I420,width=1280,height=720,framerate=30/1 ! x264enc tune=zerolatency speed-preset=ultrafast bitrate=2500 threads=2 ! h264parse ! fakesink sync=false
+```
+
+```bash
+watch -n 2 'vcgencmd measure_temp; vcgencmd measure_clock arm; top -bn1 | head -15'
+```
+
+溫度持續上升或 `measure_clock` 掉下來，就代表放進機身會出問題。
+
+**結論**：
+
+| | Pi 5＋libx264 | Pi 4＋硬體編碼 | RK3582／RK3576＋`mpph264enc` |
+|---|---|---|---|
+| 編碼的 CPU 負擔 | 高（推估約一核） | 低 | 幾乎沒有 |
+| 發熱 | 高 | 中 | 低 |
+| `mediad` 要改多少 | 相機來源、格式 | 相機來源、格式、`v4l2h264enc` | 幾乎不用 |
+| 適合 | 桌上驗證、算力實驗 | 桌上驗證；裝機走 CM4 | 桌上驗證與裝機 |
+
+想用 Pi 生態：Pi 4 桌上驗證、CM4＋自製載板裝機。要最少移植工作，仍是 Rockchip（§2.6）。
+
 ---
 
 ## 7. 評估過但不建議的選項
 
 - **Raspberry Pi 5**：沒有硬體 H.264 編碼（`mediad` 要改軟體編碼，和 50 Hz 迴圈搶 CPU）、沒有 NPU、相機
   堆疊要改 libcamera、要新 OS 映像；85×56 mm、5 V／5 A、要主動散熱，塞不進 25 cm／800 g 的機身。
-  專案本來就刻意不支援 Pi（`robotd-design.md` 開頭）。
+  專案本來就刻意不支援 Pi（`robotd-design.md` 開頭）。libx264 算力上跑得動 720p30，但持續負載發熱，裝機不適合；
+  Pi 4／CM4 有硬體編碼，是 Pi 家族裡較合適的路線，見 §6.6。
 - **Arduino UNO Q**（QRB2210，4×A53）：算力和 RK3566 同級，換了沒有收益；失去 MPP／RKNN；68.58×53.34 mm；
   Vin 下限 7 V 低於 2S 負載下的 6.6 V，實際仍要穩壓。內建 STM32 理論上能專管伺服匯流排，但 `robotd` 在一般
-  Linux 上已能穩定 50 Hz，不值得為此重構。
+  Linux 上已能穩定 50 Hz，不值得為此重構。相機支援也還不成熟（§6.6）。
 - **NVIDIA Jetson Orin Nano**：GPU 很強，但依現有了解 Orin Nano 沒有硬體編碼器（未重新查證）；功耗約 7–15 W，
   體積也大。
 
@@ -519,3 +585,5 @@ push／brake、下坡等任務）。它只是一組策略加調校預設（`depl
 - `microduck-replica` A7Z 版伺服匯流排偶發讀取失敗的根因；`R17` 動作模型的來源。
 - ROCK 4D：1 Mbps UART 長時間 sync read 是否穩定、`mpph264enc` 在 RK3576 上是否可用、rkaiq 的 IMX219 IQ 檔、
   機身內溫度；露天那兩筆的實際價格與有無 Wi-Fi／BT。
+- Pi：Pi 5 libx264 在 720p30 的實際 CPU 占用與溫度（§6.6 的實測方法）；Pi 4 `v4l2h264enc` 的實際規格與在
+  `mediad` 上的可行性。
